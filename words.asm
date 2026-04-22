@@ -156,6 +156,35 @@ FillMem::
     ret
 
 ; ---------------------------------------------------------------------
+; Checksum :: ( -- )  XOR-fold arg1 bytes starting at arg0; write the
+; 8-bit result into arg3. Host compares against its own XOR of the
+; bytes it uploaded — one fetch confirms the whole block arrived
+; uncorrupted. If the check fails the host can retry.
+;   arg0 = source ptr, arg1 = byte count, arg3 = result out.
+Checksum::
+    ld a, [ARG0]
+    ld l, a
+    ld a, [ARG0+1]
+    ld h, a
+    ld a, [ARG1]
+    ld c, a
+    ld a, [ARG1+1]
+    ld b, a
+    xor a
+    ld d, a            ; accumulator
+.loop:
+    ld a, [hl+]
+    xor d
+    ld d, a
+    dec bc
+    ld a, b
+    or c
+    jr nz, .loop
+    ld a, d
+    ld [ARG3], a
+    ret
+
+; ---------------------------------------------------------------------
 ; PrintString :: ( -- )  Write a NUL-terminated byte string to the BG map
 ; (or any mem region). Each source byte becomes one destination byte, so
 ; if the dest is the BG map and the source chars are ASCII, the ASCII

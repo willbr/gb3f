@@ -313,6 +313,33 @@ class WordSet:
     def run(self, name):
         self.link.call(self.addr(name))
 
+    def checksum(self, addr, count):
+        """Ask the GB for the XOR of count bytes starting at addr.
+        Returns a single byte; caller compares to its own XOR. One fetch
+        regardless of block size, so this is ~50x cheaper than reading
+        the block back for verification."""
+        self.link.store16(ARG0, addr)
+        self.link.store16(ARG1, count)
+        self.run("Checksum")
+        return self.link.fetch(ARG3)
+
+    def verified_store_many(self, addr, data, attempts=3):
+        """store_many + GB-side XOR check; retry whole block on mismatch."""
+        want = 0
+        for b in data:
+            want ^= b
+        for attempt in range(attempts):
+            self.link.store_many(addr, data)
+            got = self.checksum(addr, len(data))
+            if got == want:
+                return
+            print(f"  verified_store_many: checksum {got:02X} != {want:02X} at "
+                  f"[{addr:04X}], retry {attempt+1}/{attempts}", file=sys.stderr)
+        raise RuntimeError(
+            f"failed to upload {len(data)} bytes to ${addr:04X} after "
+            f"{attempts} attempts (checksum mismatch)"
+        )
+
 
 def print_h(link, words=None):
     """Put a single 'H' in the top-left corner of the DMG screen.
@@ -483,6 +510,7 @@ REPL_HELP = """\
  : <addr> <val>             XC! — store a byte
  x <addr>                   XCALL — call subroutine
  reload                     rebuild words.asm and re-upload
+ sum <addr> <count>         XOR-checksum a byte range on the GB
  words                      list loaded words and their runtime addresses
  run <word>                 XCALL a named word
  print <x> <y> <message>    render a string at tile coords (x, y)
@@ -533,6 +561,10 @@ def repl(link):
                 t0 = time.time()
                 ws.compile_and_upload()
                 print(f"{len(ws.labels)} words in {time.time()-t0:.2f}s")
+            elif cmd == "sum":
+                addr = _parse_int(tokens[1])
+                count = _parse_int(tokens[2])
+                print(f"xor({addr:04X}..{addr+count-1:04X}) = {ws.checksum(addr, count):02X}")
             elif cmd == "words":
                 for name in sorted(ws.labels, key=ws.labels.get):
                     print(f"  ${ws.addr(name):04X}  {name}")
