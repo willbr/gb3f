@@ -29,10 +29,12 @@ bgb64 -rom ./3forth.gb -listen 127.0.0.1:8765 \
       -screenonexit "$(pwd)/hello.bmp"
 
 # Drive it from the host.
-python gbforth.py selftest       # round-trips 512 bytes to verify the link
-python gbforth.py peek 0x0104    # read one byte (expect CE, Nintendo logo)
-python gbforth.py poke 0xC000 42 # write one byte to WRAM
-python gbforth.py hello --halt   # paint an H, then XCALL $0008 to exit BGB
+python gbforth.py selftest         # round-trips 512 bytes to verify the link
+python gbforth.py peek 0x0104      # read one byte (expect CE, Nintendo logo)
+python gbforth.py poke 0xC000 42   # write one byte to WRAM
+python gbforth.py reload           # rebuild words.asm and upload; list labels
+python gbforth.py run ClearBG      # fire any word from the hot-reloadable library
+python gbforth.py hello --halt     # paint an H, then XCALL $0008 to exit BGB
 python bmp2png.py hello.bmp hello.png
 ```
 
@@ -42,9 +44,10 @@ python bmp2png.py hello.bmp hello.png
 | --- | --- |
 | `3forth.asm` | SM83 source for the monitor (66 bytes + an `ld b,b` halt at $0008). |
 | `3forth.gb` | Assembled cartridge. |
-| `gbforth.py` | BGB TCP link-cable client and CLI (`peek`, `poke`, `call`, `selftest`, `diag`, `hello`). |
+| `words.asm` | Hot-reloadable library of leaf SM83 words, uploaded into WRAM at runtime. |
+| `gbforth.py` | BGB TCP link-cable client and CLI (`peek`, `poke`, `call`, `run`, `reload`, `selftest`, `diag`, `hello`). |
 | `bmp2png.py` | Converts BGB's BMP screenshots to PNG. |
-| `NOTES.md` | Deep dive: protocol details, BGB quirks, the upload-and-XCALL trick. |
+| `NOTES.md` | Deep dive: protocol details, BGB quirks, the hot-reloadable-words workflow. |
 | `reference/` | The source material — Sergeant's paper, Pan Docs, BGB manual, BGB link protocol. |
 
 See `NOTES.md` for how the ROM's dispatch loop works, the host protocol

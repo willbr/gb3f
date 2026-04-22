@@ -26,12 +26,20 @@ that aren't obvious from the code.
   session and closes it cleanly via `wantdisconnect` so BGB re-listens.
 
 The "3-instruction" constraint means adding new capability does not mean
-adding a new opcode to the ROM. Instead, assemble a small SM83 subroutine
-as a Python `bytes(...)` literal, upload it with `store_many(0xC000, ...)`,
-and fire it with `call(0xC000)`. `print_h` in `gbforth.py` is the worked
-example — it replaces ~1060 individual XC! calls (20 s, flaky) with one
-XCALL of an uploaded routine (1.2 s, deterministic). Any new high-level
-operation should follow that shape.
+adding a new opcode to the ROM. Instead, add a labelled word to
+`words.asm`, and `gbforth.py` (via the `WordSet` class) rebuilds it with
+rgbasm, uploads the fresh binary into WRAM at $C000, parses the `.sym`
+file, and makes the label callable by name. `print_h` composes a handful
+of such words on the host; any new high-level operation should follow
+that shape.
+
+Words in `words.asm` must be position-independent (this rgbasm vintage
+has no `LOAD` blocks): use `jr` internally, absolute addresses only for
+fixed hardware / WRAM regions, never `call` another word in the same
+file. Parameterless leaf words with hardcoded hardware/WRAM addresses
+are the simplest; when a word needs inputs, they go through hardcoded
+WRAM slots (`CopyTile1` reads from `$C100`) — composition happens on
+the host side with multiple XCALLs, not inside the words.
 
 ## Common commands
 

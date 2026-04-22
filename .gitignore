@@ -1,6 +1,7 @@
 __pycache__/
 *.o
 *.sym
+*.bin
 *.bmp
 debug.log
 peek.out

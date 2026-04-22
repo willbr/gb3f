@@ -123,23 +123,62 @@ latter.
   comes back as sync3 b2=1 — `xchg` retries the same byte until the
   GB catches up.
 
-## The `hello` trick
+## Hot-reloadable words (`words.asm` + `WordSet`)
 
 Driving ~1060 individual `XC!` calls to populate tiles + BG map takes
 ~20 s and is also flaky: under BGB some of those VRAM writes don't
 stick (LCD-mode races, disabling-outside-VBlank lingering state, etc).
 
-Instead, `print_h` assembles a ~30-byte subroutine, uploads it into
-WRAM at $C000, puts the 8-byte × 2 'H' glyph at $C100, and issues a
-single `XCALL $C000`. The routine runs at 4.19 MHz inside the emulated
-GB: disables LCD, sets BGP/SCX/SCY, copies the glyph into tile 1 at
-$8010, writes `1` into the top-left BG map cell at $9800, re-enables
-the LCD with `LCDC=$91`, and returns. End-to-end `hello` drops from
-20 s to ~1.2 s and the output is consistent.
+The current workflow instead keeps a library of short SM83 routines in
+`words.asm`, assembled by rgbasm to a flat binary that `gbforth.py`
+uploads into WRAM at $C000 and calls by label name. Each command-line
+invocation re-builds, re-uploads, and can run a fresh word:
 
-This is the shape of the intended workflow with a 3-instruction Forth:
-the target only needs the three primitives; richer words are assembled
-on the host and uploaded-and-run on demand.
+```sh
+python gbforth.py reload     # rebuild words.asm and upload; print the label table
+python gbforth.py run ClearBG
+python gbforth.py hello      # WordSet-composed sequence that draws H
+```
+
+Composition happens on the host — `print_h` is now just:
+
+```python
+words.run("LcdOff")
+words.run("ResetScrollPal")
+words.run("ClearBG")
+words.run("CopyTile1")
+words.run("SetTopLeft1")
+words.run("LcdBgOn")
+```
+
+End-to-end `hello` drops from 20 s (1060 XC!) to ~4 s (6 XCALLs on top
+of a one-shot upload of ~72 bytes of word code), and the output is
+stable.
+
+### Position-independence constraint
+
+Our rgbasm vintage doesn't support `LOAD` blocks, so there's no way to
+assemble a ROM output whose bytes resolve labels against a WRAM base
+address. Words in `words.asm` therefore must be position-independent:
+
+- internal branches use `jr` (relative)
+- absolute addresses are only allowed for fixed hardware regions
+  (`$FF40`, `$9800`, etc.) and hardcoded WRAM slots
+- **do not `call` another word in the same file** — label addresses
+  resolve against `ROM0[$0000]`, and the call would land in cartridge
+  ROM instead of WRAM
+
+Compose words on the host (multiple XCALLs) rather than inside each
+other. For parameters, use fixed WRAM slots (the `CopyTile1` convention
+is "source at $C100, dest at $8010", hardcoded in the word itself).
+
+### Post-XCALL settle
+
+`Link.call()` sleeps ~50 ms after sending the three protocol bytes so
+the routine has time to finish and return to the main GetByte loop
+before the next command's sync1 arrives. Back-to-back XCALLs without
+this settle race the GB's return path and cause byte misalignment —
+the 'H' glyph bytes end up partly corrupted with leftover VRAM state.
 
 ## Wire-level tuning knobs
 
@@ -151,12 +190,16 @@ under load.
 
 ## What's missing / ideas
 
-- The `hello` routine doesn't clear the BG map, so BGB's simulated
-  post-boot logo tiles show next to the `H`. Uploading a second
-  "zero-fill 1024 bytes" routine would fix that.
+- Parameters to words go through fixed WRAM slots, so every word with a
+  different source/dest has to be its own named routine. A tiny arg
+  area (e.g. $C1F0..$C1FF) with a calling convention would let us have
+  generic `CopyTile` / `FillMap` words the host can reuse.
 - There's no keyboard / REPL — each CLI invocation is a fresh TCP
   session. A long-lived driver with a prompt would match the original
   Pygmy-Forth ergonomics better.
+- Font upload + string printer: once the arg convention exists,
+  printing arbitrary strings at arbitrary positions is a small host-side
+  word library.
 - Real hardware path (flash cart + USB serial adapter wired to the
   link port) is unexplored; the protocol half is already portable,
   only the TCP-to-serial shim would change.

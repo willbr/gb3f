@@ -4,8 +4,10 @@ Talks to BGB over its TCP link-cable protocol. We act as the serial master,
 clocking each byte in/out by exchanging sync1/sync2 packets.
 """
 import argparse
+import os
 import socket
 import struct
+import subprocess
 import sys
 import time
 
@@ -130,10 +132,16 @@ class Link:
         self.xchg(addr & 0xFF)
         self.xchg(val & 0xFF)
 
-    def call(self, addr):
+    def call(self, addr, settle=0.05):
+        """XCALL the routine at `addr`. Sleeps `settle` seconds afterwards so
+        the routine has time to finish and return to the main GetByte loop
+        before the next command arrives — without this, back-to-back XCALLs
+        can race the routine's execution and the next sync1 misaligns."""
         self.xchg(0x03)
         self.xchg((addr >> 8) & 0xFF)
         self.xchg(addr & 0xFF)
+        if settle:
+            time.sleep(settle)
 
     def store_many(self, addr, data):
         for i, b in enumerate(data):
@@ -171,33 +179,85 @@ GLYPH_H = bytes([
 GLYPH_BLANK = bytes(16)
 
 
-def print_h(link):
+WORDS_BASE = 0xC000
+
+
+class WordSet:
+    """A set of SM83 words compiled from `words.asm`, uploaded into WRAM,
+    and callable by label name.
+
+    Each invocation of `compile_and_upload()` re-runs rgbasm/rgblink, reads
+    the fresh `words.sym`, and stores the first N bytes of `words.bin` into
+    WRAM at `base` (default $C000). After that, `run(name)` issues a single
+    XCALL at `base + labels[name]`.
+
+    Words in `words.asm` must be position-independent: internal branches
+    use `jr`; absolute addresses are only allowed for fixed hardware and
+    WRAM slots, never for other labels in the same file.
+    """
+    def __init__(self, link, base=WORDS_BASE):
+        self.link = link
+        self.base = base
+        self.labels = {}
+
+    @staticmethod
+    def compile(asm="words.asm"):
+        """Run rgbasm + rgblink. Returns (bin_path, sym_path)."""
+        stem, _ = os.path.splitext(asm)
+        o, b, s = stem + ".o", stem + ".bin", stem + ".sym"
+        subprocess.check_call(["rgbasm", "-o", o, asm])
+        subprocess.check_call(["rgblink", "-o", b, "-n", s, o])
+        return b, s
+
+    @staticmethod
+    def parse_sym(path):
+        labels = {}
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith(";"):
+                    continue
+                # "00:0123 Label"
+                bank_addr, _, name = line.partition(" ")
+                if ":" not in bank_addr or not name:
+                    continue
+                _, addr = bank_addr.split(":")
+                labels[name] = int(addr, 16)
+        return labels
+
+    def compile_and_upload(self, asm="words.asm"):
+        bin_path, sym_path = self.compile(asm)
+        self.labels = self.parse_sym(sym_path)
+        # Upload only as much of the binary as we actually use (rgblink pads
+        # the output to a full ROM bank).
+        end = max(self.labels.values()) + 64
+        with open(bin_path, "rb") as f:
+            data = f.read(end)
+        self.link.store_many(self.base, data)
+
+    def addr(self, name):
+        return self.base + self.labels[name]
+
+    def run(self, name):
+        self.link.call(self.addr(name))
+
+
+def print_h(link, words=None):
     """Put a single 'H' in the top-left corner of the DMG screen.
 
-    Rather than driving ~1060 individual XC! calls (slow, and flaky under BGB
-    with LCD still partially live), we upload a compiled subroutine into WRAM
-    and XCALL it. The three primitives (XC@/XC!/XCALL) are plenty to build
-    higher-level operations — this is exactly the distributed-Forth idea.
+    Composes leaf words from `words.asm` on the host side — exactly the
+    distributed-Forth idea Sergeant's paper describes.
     """
-    # Stage 1: minimal — set BG palette, copy 'H' glyph, set map[0]=1, re-enable LCD.
-    # Skip the blank-tile-0 and BG-map-clear stages; we rely on the random boot VRAM
-    # pattern not to render nonsense everywhere. (A cleaner version would upload a
-    # clear routine too.)
-    routine = bytes([
-        0xAF, 0xE0, 0x40,                 # xor a ; ldh [$40],a   -- LCD off
-        0x3E, 0xE4, 0xE0, 0x47,           # ld a,$E4 ; ldh [$47],a -- BGP
-        0xAF, 0xE0, 0x42, 0xE0, 0x43,     # xor a ; ldh [$42],a ; ldh [$43],a
-        0x21, 0x00, 0xC1,                 # ld hl,$C100            -- H glyph source
-        0x11, 0x10, 0x80,                 # ld de,$8010            -- tile 1 dest
-        0x06, 0x10,                       # ld b,16
-        0x2A, 0x12, 0x13, 0x05, 0x20, 0xFA,  # copy: ld a,[hl+] ; ld [de],a ; inc de ; dec b ; jr nz,copy
-        0x3E, 0x01, 0xEA, 0x00, 0x98,     # ld a,1 ; ld [$9800],a    -- top-left tile
-        0x3E, 0x91, 0xE0, 0x40,           # ld a,$91 ; ldh [$40],a   -- LCD on
-        0xC9,                             # ret
-    ])
-    link.store_many(0xC000, routine)
-    link.store_many(0xC100, GLYPH_H)
-    link.call(0xC000)
+    if words is None:
+        words = WordSet(link)
+        words.compile_and_upload()
+    link.store_many(0xC100, GLYPH_H)   # CopyTile1 reads from $C100
+    words.run("LcdOff")
+    words.run("ResetScrollPal")
+    words.run("ClearBG")
+    words.run("CopyTile1")
+    words.run("SetTopLeft1")
+    words.run("LcdBgOn")
 
 
 def stress(link, n=512):
@@ -299,6 +359,10 @@ def main():
                          help="XCALL $0008 after drawing, so a headless BGB can auto-exit")
     sub.add_parser("selftest", help="peek ROM bytes and round-trip RAM to verify the link")
     sub.add_parser("diag", help="run hello then peek back LCDC, tile data, and BG map entry")
+    sub.add_parser("reload", help="rebuild words.asm and upload to WRAM")
+
+    p_run = sub.add_parser("run", help="run a named word (implies reload)")
+    p_run.add_argument("word")
 
     p_peek = sub.add_parser("peek", help="fetch one byte")
     p_peek.add_argument("addr", type=lambda s: int(s, 0))
@@ -329,6 +393,18 @@ def main():
             link.store(args.addr, args.value)
         elif args.cmd == "call":
             link.call(args.addr)
+        elif args.cmd == "reload":
+            ws = WordSet(link)
+            ws.compile_and_upload()
+            for name in sorted(ws.labels, key=ws.labels.get):
+                print(f"  {ws.addr(name):04X}  {name}")
+        elif args.cmd == "run":
+            ws = WordSet(link)
+            ws.compile_and_upload()
+            if args.word not in ws.labels:
+                available = ", ".join(sorted(ws.labels))
+                raise SystemExit(f"unknown word '{args.word}'. available: {available}")
+            ws.run(args.word)
 
 
 if __name__ == "__main__":
