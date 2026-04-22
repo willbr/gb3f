@@ -245,8 +245,28 @@ Closer to the Pygmy-Forth target-dev loop the Sergeant paper describes
 than one-shot CLI invocations are — amortizes the ~1 s word upload
 across a session.
 
+## RLE (partial)
+
+`RleDecode` is a PackBits-style expander: control byte 0..127 means
+"literal run of N+1 bytes", 128..255 means "(N & $7F)+2 copies of
+next byte". `rle_encode(data)` in `gbforth.py` emits the matching
+stream; `WordSet.rle_store(dst, data)` stages the encoded blob at
+`$C200`, sets arg0/arg1/arg2, and XCALLs `RleDecode`. Falls back to
+`store_many` when the encoding isn't actually smaller.
+
+Single-call round-trip verified for all-zeros, all-FF, alternating,
+and the space glyph. Two consecutive `rle_store`s to different
+destinations corrupt state: the arg slots read back as zero after
+the second call, and BGB eventually trips an invalid-opcode exception
+around `$C9xx`, which means something in the handoff is pushing PC
+into uninitialized WRAM. The assembled `RleDecode` bytes check out
+against the source, and a single invocation always works, so the
+trouble is across-call, not intra-word — unshipped until the
+reproducer is understood.
+
 ## What's missing / ideas
 
+- Track down the two-consecutive-`rle_store` corruption above.
 - The font is single-case ASCII; adding lowercase + more punctuation is
   just more entries in `FONT_1BPP`.
 - A `bulk_store_many` primitive that stays in a GB-side receive loop

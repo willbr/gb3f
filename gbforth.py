@@ -236,6 +236,37 @@ FONT_1BPP = {
 }
 
 
+def rle_encode(data):
+    """PackBits-like RLE: control byte N. 0..127 -> N+1 literal bytes
+    follow (1..128 literals); 128..255 -> (N&$7F)+2 copies of next byte
+    (2..129 repeats). Matches `RleDecode` in words.asm.
+    """
+    out = bytearray()
+    i = 0
+    n = len(data)
+    while i < n:
+        # Greedy run
+        run_end = i
+        while run_end + 1 < n and data[run_end + 1] == data[i] and run_end - i + 1 < 129:
+            run_end += 1
+        run_len = run_end - i + 1
+        if run_len >= 3:
+            out.append(0x80 | (run_len - 2))
+            out.append(data[i])
+            i += run_len
+            continue
+        # Otherwise emit literals up to next run-of-3 or 128 bytes
+        lit_start = i
+        while i < n and i - lit_start < 128:
+            if i + 2 < n and data[i] == data[i+1] == data[i+2]:
+                break
+            i += 1
+        lit_len = i - lit_start
+        out.append(lit_len - 1)
+        out.extend(data[lit_start:i])
+    return bytes(out)
+
+
 def glyph_2bpp(ch):
     """Expand a 1bpp 8x8 glyph to GB tile format (16 bytes, color 3)."""
     rows = FONT_1BPP.get(ch.upper(), FONT_1BPP[' '])
@@ -323,6 +354,23 @@ class WordSet:
         self.run("Checksum")
         return self.link.fetch(ARG3)
 
+    def rle_store(self, dst, data, staging=None):
+        """Upload `data` to `dst` by RLE-encoding, staging the compressed
+        blob in WRAM, and XCALLing RleDecode to expand it. Falls back to
+        plain store_many if the encoded payload isn't actually smaller.
+        Returns (compressed_size, uncompressed_size)."""
+        encoded = rle_encode(data)
+        if len(encoded) >= len(data):
+            self.link.store_many(dst, data)
+            return (len(data), len(data))
+        staging = staging if staging is not None else STAGING
+        self.link.store_many(staging, encoded)
+        self.link.store16(ARG0, staging)
+        self.link.store16(ARG1, dst)
+        self.link.store16(ARG2, len(data))
+        self.run("RleDecode")
+        return (len(encoded), len(data))
+
     def verified_store_many(self, addr, data, attempts=3):
         """store_many + GB-side XOR check; retry whole block on mismatch."""
         want = 0
@@ -342,21 +390,8 @@ class WordSet:
 
 
 def print_h(link, words=None):
-    """Put a single 'H' in the top-left corner of the DMG screen.
-
-    Composes leaf words from `words.asm` on the host side — exactly the
-    distributed-Forth idea Sergeant's paper describes.
-    """
-    if words is None:
-        words = WordSet(link)
-        words.compile_and_upload()
-    link.store_many(0xC100, GLYPH_H)   # CopyTile1 reads from $C100
-    words.run("LcdOff")
-    words.run("ResetScrollPal")
-    words.run("ClearBG")
-    words.run("CopyTile1")
-    words.run("SetTopLeft1")
-    words.run("LcdBgOn")
+    """Compatibility wrapper: draw 'H' in the top-left via print_string."""
+    print_string(link, 0, 0, "H", words)
 
 
 def scroll_demo(link, message, cycles=3, step_delay=0.05, words=None):

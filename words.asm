@@ -7,8 +7,7 @@
 ; Composition happens on the host, one XCALL per word.
 ;
 ; WRAM layout the host and these words agree on:
-;   $C000..$C0FF  code (this file)
-;   $C100..$C10F  glyph data buffer for CopyTile1
+;   $C000..$C1EF  code (this file) — up to 496 bytes
 ;   $C1F0..$C1FF  word argument slots (set by host via XC! before XCALL):
 ;                   $C1F0/F1  arg0 (16-bit, e.g. source pointer)
 ;                   $C1F2/F3  arg1 (16-bit, e.g. destination pointer)
@@ -85,28 +84,6 @@ ClearVRAM::
     ret
 
 ; ---------------------------------------------------------------------
-; CopyTile1 :: ( -- )  Copy 16 bytes from $C100 to $8010 (tile 1).
-;              Callers upload glyph data to $C100 before invoking.
-CopyTile1::
-    ld hl, $C100
-    ld de, $8010
-    ld b, 16
-.loop:
-    ld a, [hl+]
-    ld [de], a
-    inc de
-    dec b
-    jr nz, .loop
-    ret
-
-; ---------------------------------------------------------------------
-; SetTopLeft1 :: ( -- )  Write 1 to $9800 so the top-left BG cell uses tile 1.
-SetTopLeft1::
-    ld a, 1
-    ld [$9800], a
-    ret
-
-; ---------------------------------------------------------------------
 ; CopyBytes :: ( -- )  Copy arg2 bytes from arg0 to arg1.
 ;   arg0 = source ptr, arg1 = dest ptr, arg2 = byte count.
 CopyBytes::
@@ -154,6 +131,63 @@ FillMem::
     or c
     jr nz, .loop
     ret
+
+; ---------------------------------------------------------------------
+; RleDecode :: ( -- )  Decompress a PackBits-style RLE stream.
+;   arg0 = encoded source ptr, arg1 = dest ptr, arg2 = UNCOMPRESSED size.
+; Stream format: control byte N.
+;   0..127   -> (N+1) literal bytes follow (1..128 literals)
+;   128..255 -> (N&$7F)+2 copies of next byte (2..129 repeats)
+; Uses $C1FE/$C1FF as scratch (inside the arg-slot region but above ARG3).
+RleDecode::
+    ld a, [ARG0]
+    ld l, a
+    ld a, [ARG0+1]
+    ld h, a
+    ld a, [ARG1]
+    ld e, a
+    ld a, [ARG1+1]
+    ld d, a
+    ld a, [ARG2]
+    ld c, a
+    ld a, [ARG2+1]
+    ld b, a
+.chunk:
+    ld a, b                  ; done when bc == 0
+    or c
+    ret z
+    ld a, [hl+]              ; control byte
+    bit 7, a
+    jr nz, .run
+    ; literal run: a = count-1 (0..127) -> 1..128 bytes
+    inc a
+    ld [$C1FE], a            ; loop counter
+.lit:
+    ld a, [hl+]
+    ld [de], a
+    inc de
+    dec bc
+    ld a, [$C1FE]
+    dec a
+    ld [$C1FE], a
+    jr nz, .lit
+    jr .chunk
+.run:
+    and $7F                  ; (a & 0x7F) + 2 copies
+    add 2
+    ld [$C1FE], a            ; count
+    ld a, [hl+]              ; value
+    ld [$C1FF], a
+.rpt:
+    ld a, [$C1FF]
+    ld [de], a
+    inc de
+    dec bc
+    ld a, [$C1FE]
+    dec a
+    ld [$C1FE], a
+    jr nz, .rpt
+    jr .chunk
 
 ; ---------------------------------------------------------------------
 ; Checksum :: ( -- )  XOR-fold arg1 bytes starting at arg0; write the
