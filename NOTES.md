@@ -226,18 +226,37 @@ the protocol reliable across Python's GIL, Windows TCP scheduling, and
 BGB's rate-limiting. Dropping it below ~1 ms causes byte misalignment
 under load.
 
+## REPL
+
+`python gbforth.py repl` keeps the TCP link open, compiles and uploads
+the word set once, and reads single-line commands from stdin:
+
+```
+gb> @ 0x0104          # XC@ fetch
+gb> : 0xC300 0x42     # XC! store
+gb> x 0x0008          # XCALL
+gb> run ClearBG       # call a named word
+gb> print 3 8 HELLO   # render a string at tile coords (3,8)
+gb> words             # list loaded words
+gb> reload            # rebuild words.asm and re-upload
+```
+
+Closer to the Pygmy-Forth target-dev loop the Sergeant paper describes
+than one-shot CLI invocations are — amortizes the ~1 s word upload
+across a session.
+
 ## What's missing / ideas
 
-- There's no keyboard / REPL — each CLI invocation is a fresh TCP
-  session. A long-lived driver with a prompt would match the original
-  Pygmy-Forth ergonomics better, and would also amortize the word-set
-  upload across many commands.
 - The font is single-case ASCII; adding lowercase + more punctuation is
   just more entries in `FONT_1BPP`.
-- A `bulk_store_many` primitive that batches consecutive `XC!` bytes
-  into one uploaded "fill from staging area" XCALL would collapse the
-  `print "HELLO GAMEBOY!"` time from ~30 s to ~1 s by paying the 5 ms
-  settle only once per run instead of once per byte.
+- A `bulk_store_many` primitive that stays in a GB-side receive loop
+  would theoretically collapse `print "HELLO GAMEBOY!"` from ~30 s to
+  ~1 s. First attempt ran into a BGB timing quirk: BGB's emulator runs
+  faster than wall-clock during link activity, and its internal
+  timestamp outruns ours by tens of seconds after only a few batches;
+  that throttling made subsequent transfers pile up latency linearly
+  (first batch ~1.4 s, fifth batch ~7 s). Needs more digging into the
+  BGB side to make it reliable.
 - Real hardware path (flash cart + USB serial adapter wired to the
   link port) is unexplored; the protocol half is already portable,
   only the TCP-to-serial shim would change.

@@ -449,6 +449,85 @@ def diagnose(link):
         print(f"    [{a:04X}] = {link.fetch(a):02X}")
 
 
+REPL_HELP = """\
+ !                          show this help
+ @ <addr>                   XC@ — fetch a byte                (addr hex ok)
+ : <addr> <val>             XC! — store a byte
+ x <addr>                   XCALL — call subroutine
+ reload                     rebuild words.asm and re-upload
+ words                      list loaded words and their runtime addresses
+ run <word>                 XCALL a named word
+ print <x> <y> <message>    render a string at tile coords (x, y)
+ hello                      draw the original "H" demo
+ q / quit / Ctrl-D          exit
+"""
+
+
+def _parse_int(tok):
+    return int(tok, 0)
+
+
+def repl(link):
+    """Interactive prompt that keeps the TCP session open and re-uses one
+    word-set upload across many commands — closer to the ergonomics of
+    Sergeant's Pygmy-driven target dev loop."""
+    ws = WordSet(link)
+    print("gb3f repl — type `!` for help, Ctrl-D / q to quit.")
+    print("loading words...", end="", flush=True)
+    ws.compile_and_upload()
+    print(f" {len(ws.labels)} words at ${ws.base:04X}")
+    while True:
+        try:
+            line = input("gb> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if not line:
+            continue
+        tokens = line.split(None, 3)
+        cmd = tokens[0].lower()
+        try:
+            if cmd in ("q", "quit", "exit"):
+                return
+            elif cmd == "!" or cmd == "help":
+                print(REPL_HELP)
+            elif cmd == "@":
+                addr = _parse_int(tokens[1])
+                print(f"[{addr:04X}] = {link.fetch(addr):02X}")
+            elif cmd == ":":
+                addr = _parse_int(tokens[1])
+                val = _parse_int(tokens[2])
+                link.store(addr, val)
+            elif cmd == "x":
+                link.call(_parse_int(tokens[1]))
+            elif cmd == "reload":
+                t0 = time.time()
+                ws.compile_and_upload()
+                print(f"{len(ws.labels)} words in {time.time()-t0:.2f}s")
+            elif cmd == "words":
+                for name in sorted(ws.labels, key=ws.labels.get):
+                    print(f"  ${ws.addr(name):04X}  {name}")
+            elif cmd == "run":
+                name = tokens[1]
+                if name not in ws.labels:
+                    print(f"unknown word '{name}'")
+                else:
+                    ws.run(name)
+            elif cmd == "print":
+                x = int(tokens[1])
+                y = int(tokens[2])
+                message = tokens[3] if len(tokens) > 3 else ""
+                t0 = time.time()
+                print_string(link, x, y, message, ws)
+                print(f"done in {time.time()-t0:.2f}s")
+            elif cmd == "hello":
+                print_h(link, ws)
+            else:
+                print(f"unknown: {cmd!r} (type ! for help)")
+        except (IndexError, ValueError) as e:
+            print(f"error: {e}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="127.0.0.1")
@@ -472,6 +551,8 @@ def main():
     p_print.add_argument("-y", type=int, default=8, help="BG-map row (0..17)")
     p_print.add_argument("--halt", action="store_true",
                          help="XCALL $0008 after drawing, so a headless BGB can auto-exit")
+
+    sub.add_parser("repl", help="interactive prompt that keeps the link open and the word set loaded")
 
     p_peek = sub.add_parser("peek", help="fetch one byte")
     p_peek.add_argument("addr", type=lambda s: int(s, 0))
@@ -520,6 +601,8 @@ def main():
             print(f"done in {time.time()-t0:.2f}s")
             if args.halt:
                 link.call(0x0008)
+        elif args.cmd == "repl":
+            repl(link)
 
 
 if __name__ == "__main__":
