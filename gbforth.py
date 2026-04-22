@@ -147,6 +147,11 @@ class Link:
         for i, b in enumerate(data):
             self.store(addr + i, b)
 
+    def store16(self, addr, value):
+        """Little-endian 16-bit store, for filling a word-arg slot."""
+        self.store(addr, value & 0xFF)
+        self.store(addr + 1, (value >> 8) & 0xFF)
+
     def close(self):
         # Tell BGB this is a user-initiated disconnect so it goes back to
         # listening instead of trying to reconnect to us.
@@ -179,7 +184,74 @@ GLYPH_H = bytes([
 GLYPH_BLANK = bytes(16)
 
 
+# 8x8 bitmap font (1 byte per row, 8 rows per glyph) for a printable-ASCII
+# subset — enough for short demo strings. Each row bit set = inked pixel.
+# We convert to GB 2bpp at upload time (same byte on both planes → color 3
+# = black under the default $E4 palette).
+FONT_1BPP = {
+    ' ': b'\x00\x00\x00\x00\x00\x00\x00\x00',
+    '!': b'\x18\x18\x18\x18\x00\x00\x18\x00',
+    '.': b'\x00\x00\x00\x00\x00\x18\x18\x00',
+    ',': b'\x00\x00\x00\x00\x00\x18\x18\x30',
+    ':': b'\x00\x18\x18\x00\x00\x18\x18\x00',
+    '-': b'\x00\x00\x00\x7E\x00\x00\x00\x00',
+    '?': b'\x3C\x66\x06\x0C\x18\x00\x18\x00',
+    "'": b'\x18\x18\x18\x00\x00\x00\x00\x00',
+    '0': b'\x3C\x66\x6E\x76\x66\x66\x3C\x00',
+    '1': b'\x18\x38\x18\x18\x18\x18\x7E\x00',
+    '2': b'\x3C\x66\x06\x0C\x30\x60\x7E\x00',
+    '3': b'\x3C\x66\x06\x1C\x06\x66\x3C\x00',
+    '4': b'\x0C\x1C\x3C\x6C\x7E\x0C\x0C\x00',
+    '5': b'\x7E\x60\x7C\x06\x06\x66\x3C\x00',
+    '6': b'\x3C\x66\x60\x7C\x66\x66\x3C\x00',
+    '7': b'\x7E\x06\x0C\x18\x30\x30\x30\x00',
+    '8': b'\x3C\x66\x66\x3C\x66\x66\x3C\x00',
+    '9': b'\x3C\x66\x66\x3E\x06\x66\x3C\x00',
+    'A': b'\x18\x3C\x66\x66\x7E\x66\x66\x00',
+    'B': b'\x7C\x66\x66\x7C\x66\x66\x7C\x00',
+    'C': b'\x3C\x66\x60\x60\x60\x66\x3C\x00',
+    'D': b'\x78\x6C\x66\x66\x66\x6C\x78\x00',
+    'E': b'\x7E\x60\x60\x7C\x60\x60\x7E\x00',
+    'F': b'\x7E\x60\x60\x7C\x60\x60\x60\x00',
+    'G': b'\x3C\x66\x60\x6E\x66\x66\x3E\x00',
+    'H': b'\x66\x66\x66\x7E\x66\x66\x66\x00',
+    'I': b'\x3C\x18\x18\x18\x18\x18\x3C\x00',
+    'J': b'\x1E\x0C\x0C\x0C\x0C\x6C\x38\x00',
+    'K': b'\x66\x6C\x78\x70\x78\x6C\x66\x00',
+    'L': b'\x60\x60\x60\x60\x60\x60\x7E\x00',
+    'M': b'\x63\x77\x7F\x6B\x63\x63\x63\x00',
+    'N': b'\x63\x73\x7B\x6F\x67\x63\x63\x00',
+    'O': b'\x3C\x66\x66\x66\x66\x66\x3C\x00',
+    'P': b'\x7C\x66\x66\x7C\x60\x60\x60\x00',
+    'Q': b'\x3C\x66\x66\x66\x6A\x6C\x36\x00',
+    'R': b'\x7C\x66\x66\x7C\x78\x6C\x66\x00',
+    'S': b'\x3C\x66\x60\x3C\x06\x66\x3C\x00',
+    'T': b'\x7E\x18\x18\x18\x18\x18\x18\x00',
+    'U': b'\x66\x66\x66\x66\x66\x66\x3C\x00',
+    'V': b'\x66\x66\x66\x66\x66\x3C\x18\x00',
+    'W': b'\x63\x63\x63\x6B\x7F\x77\x63\x00',
+    'X': b'\x66\x66\x3C\x18\x3C\x66\x66\x00',
+    'Y': b'\x66\x66\x66\x3C\x18\x18\x18\x00',
+    'Z': b'\x7E\x06\x0C\x18\x30\x60\x7E\x00',
+}
+
+
+def glyph_2bpp(ch):
+    """Expand a 1bpp 8x8 glyph to GB tile format (16 bytes, color 3)."""
+    rows = FONT_1BPP.get(ch.upper(), FONT_1BPP[' '])
+    out = bytearray()
+    for r in rows:
+        out.append(r)  # low bitplane
+        out.append(r)  # high bitplane (same bits → color 3 under BGP=$E4)
+    return bytes(out)
+
+
 WORDS_BASE = 0xC000
+ARG0 = 0xC1F0
+ARG1 = 0xC1F2
+ARG2 = 0xC1F4
+ARG3 = 0xC1F6
+STAGING = 0xC200       # where host-staged data lives (strings, tile bytes)
 
 
 class WordSet:
@@ -257,6 +329,36 @@ def print_h(link, words=None):
     words.run("ClearBG")
     words.run("CopyTile1")
     words.run("SetTopLeft1")
+    words.run("LcdBgOn")
+
+
+def print_string(link, x, y, message, words=None):
+    """Paint an ASCII string onto the BG map at tile coordinates (x, y).
+
+    We use tile index = ASCII code, so each character's glyph must be at
+    $8000 + ord(c)*16. Only the glyphs for distinct characters in the
+    message are uploaded — enough font for the word, no more.
+    """
+    if words is None:
+        words = WordSet(link)
+        words.compile_and_upload()
+
+    words.run("LcdOff")
+    words.run("ResetScrollPal")
+    words.run("ClearBG")
+
+    # Upload glyphs for each unique character.
+    for ch in set(message.upper()):
+        tile = ord(ch)
+        link.store_many(0x8000 + tile * 16, glyph_2bpp(ch))
+
+    # Stage the null-terminated message in WRAM and point PrintString at it.
+    msg = message.upper().encode("ascii") + b"\0"
+    link.store_many(STAGING, msg)
+    link.store16(ARG0, STAGING)
+    link.store16(ARG1, 0x9800 + y * 32 + x)
+    words.run("PrintString")
+
     words.run("LcdBgOn")
 
 
@@ -364,6 +466,13 @@ def main():
     p_run = sub.add_parser("run", help="run a named word (implies reload)")
     p_run.add_argument("word")
 
+    p_print = sub.add_parser("print", help="render an ASCII string on the GB screen")
+    p_print.add_argument("message")
+    p_print.add_argument("-x", type=int, default=5, help="BG-map column (0..19)")
+    p_print.add_argument("-y", type=int, default=8, help="BG-map row (0..17)")
+    p_print.add_argument("--halt", action="store_true",
+                         help="XCALL $0008 after drawing, so a headless BGB can auto-exit")
+
     p_peek = sub.add_parser("peek", help="fetch one byte")
     p_peek.add_argument("addr", type=lambda s: int(s, 0))
 
@@ -405,6 +514,12 @@ def main():
                 available = ", ".join(sorted(ws.labels))
                 raise SystemExit(f"unknown word '{args.word}'. available: {available}")
             ws.run(args.word)
+        elif args.cmd == "print":
+            t0 = time.time()
+            print_string(link, args.x, args.y, args.message)
+            print(f"done in {time.time()-t0:.2f}s")
+            if args.halt:
+                link.call(0x0008)
 
 
 if __name__ == "__main__":

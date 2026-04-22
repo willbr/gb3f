@@ -6,13 +6,24 @@
 ; to $00XX while the code runs at $C0XX, so the call would jump into ROM.
 ; Composition happens on the host, one XCALL per word.
 ;
-; Convention:
+; WRAM layout the host and these words agree on:
 ;   $C000..$C0FF  code (this file)
-;   $C100..$C10F  glyph data buffer for CopyTile
+;   $C100..$C10F  glyph data buffer for CopyTile1
+;   $C1F0..$C1FF  word argument slots (set by host via XC! before XCALL):
+;                   $C1F0/F1  arg0 (16-bit, e.g. source pointer)
+;                   $C1F2/F3  arg1 (16-bit, e.g. destination pointer)
+;                   $C1F4/F5  arg2 (16-bit, e.g. byte count)
+;                   $C1F6     arg3 (8-bit, e.g. fill value)
+;   $C200..       host-staged data (strings, uploaded glyphs, etc.)
 ;
 ; Build:
 ;   rgbasm  -o words.o words.asm
 ;   rgblink -o words.bin -n words.sym words.o
+
+ARG0 EQU $C1F0    ; 16-bit
+ARG1 EQU $C1F2    ; 16-bit
+ARG2 EQU $C1F4    ; 16-bit
+ARG3 EQU $C1F6    ; 8-bit
 
 SECTION "Words", ROM0[$0000]
 
@@ -93,4 +104,79 @@ CopyTile1::
 SetTopLeft1::
     ld a, 1
     ld [$9800], a
+    ret
+
+; ---------------------------------------------------------------------
+; CopyBytes :: ( -- )  Copy arg2 bytes from arg0 to arg1.
+;   arg0 = source ptr, arg1 = dest ptr, arg2 = byte count.
+CopyBytes::
+    ld a, [ARG0]
+    ld l, a
+    ld a, [ARG0+1]
+    ld h, a
+    ld a, [ARG1]
+    ld e, a
+    ld a, [ARG1+1]
+    ld d, a
+    ld a, [ARG2]
+    ld c, a
+    ld a, [ARG2+1]
+    ld b, a
+.loop:
+    ld a, [hl+]
+    ld [de], a
+    inc de
+    dec bc
+    ld a, b
+    or c
+    jr nz, .loop
+    ret
+
+; ---------------------------------------------------------------------
+; FillMem :: ( -- )  Write arg3 to arg1 bytes starting at arg0.
+;   arg0 = dest ptr, arg1 = byte count, arg3 = fill value.
+FillMem::
+    ld a, [ARG0]
+    ld l, a
+    ld a, [ARG0+1]
+    ld h, a
+    ld a, [ARG1]
+    ld c, a
+    ld a, [ARG1+1]
+    ld b, a
+    ld a, [ARG3]
+    ld d, a           ; save fill value
+.loop:
+    ld a, d
+    ld [hl+], a
+    dec bc
+    ld a, b
+    or c
+    jr nz, .loop
+    ret
+
+; ---------------------------------------------------------------------
+; PrintString :: ( -- )  Write a NUL-terminated byte string to the BG map
+; (or any mem region). Each source byte becomes one destination byte, so
+; if the dest is the BG map and the source chars are ASCII, the ASCII
+; code doubles as the tile index — the host just needs to make sure the
+; glyph for that code is at $8000 + code*16.
+;   arg0 = source ptr (string), arg1 = dest ptr (BG map cell).
+PrintString::
+    ld a, [ARG0]
+    ld l, a
+    ld a, [ARG0+1]
+    ld h, a
+    ld a, [ARG1]
+    ld e, a
+    ld a, [ARG1+1]
+    ld d, a
+.loop:
+    ld a, [hl+]
+    or a
+    jr z, .done
+    ld [de], a
+    inc de
+    jr .loop
+.done:
     ret

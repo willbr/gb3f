@@ -7,13 +7,15 @@ primitives — the Game Boy side stays at 66 bytes. Following Frank Sergeant's
 1991 *"A 3-instruction Forth for embedded systems work"* paper
 (`reference/forth.md`), ported to SM83 and BGB's TCP link protocol.
 
-End-to-end demo: a Python script tells the ROM to paint an `H` in the
-top-left of the Game Boy screen.
+End-to-end demo: a Python script tells the ROM to render a string using
+a bitmap font it uploads on demand.
 
 ![hello.png](hello.png)
 
-The large Nintendo® text in the middle is BGB's simulated post-boot VRAM; the
-`H` in the top-left is drawn by our host script via `XC!` + `XCALL`.
+Produced by `python gbforth.py print "HELLO GAMEBOY!"`. The host assembles
+leaf words (`LcdOff`, `ClearBG`, `PrintString`, …) from `words.asm`,
+uploads them into WRAM, stages the string + glyphs, fills the word-arg
+slots via `XC!`, and fires each word with a single `XCALL`.
 
 ## Quick start
 
@@ -35,6 +37,7 @@ python gbforth.py poke 0xC000 42   # write one byte to WRAM
 python gbforth.py reload           # rebuild words.asm and upload; list labels
 python gbforth.py run ClearBG      # fire any word from the hot-reloadable library
 python gbforth.py hello --halt     # paint an H, then XCALL $0008 to exit BGB
+python gbforth.py print "HELLO GAMEBOY!" --halt
 python bmp2png.py hello.bmp hello.png
 ```
 
@@ -45,7 +48,7 @@ python bmp2png.py hello.bmp hello.png
 | `3forth.asm` | SM83 source for the monitor (66 bytes + an `ld b,b` halt at $0008). |
 | `3forth.gb` | Assembled cartridge. |
 | `words.asm` | Hot-reloadable library of leaf SM83 words, uploaded into WRAM at runtime. |
-| `gbforth.py` | BGB TCP link-cable client and CLI (`peek`, `poke`, `call`, `run`, `reload`, `selftest`, `diag`, `hello`). |
+| `gbforth.py` | BGB TCP link-cable client and CLI (`peek`, `poke`, `call`, `run`, `reload`, `selftest`, `diag`, `hello`, `print`). |
 | `bmp2png.py` | Converts BGB's BMP screenshots to PNG. |
 | `NOTES.md` | Deep dive: protocol details, BGB quirks, the hot-reloadable-words workflow. |
 | `reference/` | The source material — Sergeant's paper, Pan Docs, BGB manual, BGB link protocol. |

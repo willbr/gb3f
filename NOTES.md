@@ -180,6 +180,44 @@ before the next command's sync1 arrives. Back-to-back XCALLs without
 this settle race the GB's return path and cause byte misalignment —
 the 'H' glyph bytes end up partly corrupted with leftover VRAM state.
 
+### Arg slots and generic words
+
+A fixed WRAM arg area at `$C1F0..$C1FF` lets words take parameters:
+
+```
+$C1F0/F1  arg0   (16-bit, e.g. source pointer)
+$C1F2/F3  arg1   (16-bit, e.g. destination pointer)
+$C1F4/F5  arg2   (16-bit, e.g. byte count)
+$C1F6     arg3   (8-bit,  e.g. fill value)
+```
+
+The host does `XC!` into the arg slots, then `XCALL` the word; each word
+loads its arguments off the slots at entry. `Link.store16(addr, val)` is
+the little-endian pair-store helper used for pointer-style args.
+
+Generic words in `words.asm`:
+
+- `CopyBytes` — copy arg2 bytes from arg0 to arg1.
+- `FillMem`   — fill arg1 bytes starting at arg0 with arg3.
+- `PrintString` — walk a NUL-terminated byte string at arg0, copy each
+  byte into memory starting at arg1. When arg1 is a BG-map cell and the
+  source bytes are ASCII, the ASCII codes double as tile indices — the
+  host just makes sure the glyph for each code has been uploaded to
+  `$8000 + code*16` beforehand.
+
+### Font and `print` command
+
+`gbforth.py` ships a built-in 1bpp 8x8 font for uppercase ASCII + digits
++ a little punctuation. `glyph_2bpp(c)` expands a 1bpp row to the
+2bpp GB tile format (duplicating the row on both bitplanes, which
+resolves to colour 3 under the default `$E4` palette).
+
+`python gbforth.py print "HELLO GAMEBOY!" -x 3 -y 8` uploads glyphs only
+for the distinct characters in the message (11 here), stages the NUL-
+terminated string at `$C200`, sets `arg0 = $C200`, `arg1 = $9800 + y*32 + x`,
+and XCALLs `PrintString`. End-to-end ~30 s for a short string — mostly
+glyph bytes at ~20 ms/store (4 wire bytes × 5 ms settle).
+
 ## Wire-level tuning knobs
 
 `gbforth.py` sleeps 5 ms after each successful exchange. That's much
@@ -190,16 +228,16 @@ under load.
 
 ## What's missing / ideas
 
-- Parameters to words go through fixed WRAM slots, so every word with a
-  different source/dest has to be its own named routine. A tiny arg
-  area (e.g. $C1F0..$C1FF) with a calling convention would let us have
-  generic `CopyTile` / `FillMap` words the host can reuse.
 - There's no keyboard / REPL — each CLI invocation is a fresh TCP
   session. A long-lived driver with a prompt would match the original
-  Pygmy-Forth ergonomics better.
-- Font upload + string printer: once the arg convention exists,
-  printing arbitrary strings at arbitrary positions is a small host-side
-  word library.
+  Pygmy-Forth ergonomics better, and would also amortize the word-set
+  upload across many commands.
+- The font is single-case ASCII; adding lowercase + more punctuation is
+  just more entries in `FONT_1BPP`.
+- A `bulk_store_many` primitive that batches consecutive `XC!` bytes
+  into one uploaded "fill from staging area" XCALL would collapse the
+  `print "HELLO GAMEBOY!"` time from ~30 s to ~1 s by paying the 5 ms
+  settle only once per run instead of once per byte.
 - Real hardware path (flash cart + USB serial adapter wired to the
   link port) is unexplored; the protocol half is already portable,
   only the TCP-to-serial shim would change.
