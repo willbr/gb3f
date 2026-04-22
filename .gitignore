@@ -1,0 +1,7 @@
+__pycache__/
+*.o
+*.sym
+*.bmp
+debug.log
+peek.out
+.claude/

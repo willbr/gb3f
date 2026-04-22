@@ -1,0 +1,162 @@
+# gb3f — a 3-instruction Forth for the Game Boy over BGB's link cable
+
+A tiny monitor ROM that exposes three primitives (`fetch`, `store`, `call`)
+to a host PC over the emulated link cable, following Frank Sergeant's 1991
+"3-instruction Forth for embedded systems" paper. The PC drives BGB's link
+protocol, and all higher-level behavior (VRAM setup, glyph upload, LCD on)
+is composed on the host out of XC@/XC!/XCALL.
+
+End-to-end demo: `hello` prints an `H` glyph in the top-left corner of the
+Game Boy screen.
+
+## Files
+
+| Path | What |
+| --- | --- |
+| `3forth.asm` | SM83 source for the monitor. Assembles to 66 bytes at $0150 plus an `ld b,b` halt at $0008. |
+| `3forth.gb` | Assembled 32 KiB ROM (rgbasm + rgblink + rgbfix). |
+| `gbforth.py` | BGB link-cable client and CLI. |
+| `bmp2png.py` | Pillow one-liner to convert BGB's `.bmp` screenshots to `.png`. |
+| `reference/forth.md` | Sergeant's original 68HC11 paper. |
+| `reference/Specifications.html` | Pan Docs (GB hardware reference). |
+| `reference/bgb readme.html` | BGB 1.6.6 user manual (options, command-line flags). |
+| `reference/bgb 1.4 link protocol.html` | The TCP wire protocol BGB speaks. |
+
+## Building the ROM
+
+```sh
+rgbasm  -o 3forth.o  3forth.asm
+rgblink -o 3forth.gb -n 3forth.sym 3forth.o
+rgbfix  -p 0 -v 3forth.gb
+```
+
+`-p 0` pads to the next valid ROM size with zeros, `-v` fills in the Nintendo
+logo, header checksum, and related header fields. The resulting cartridge
+boots on any DMG emulator; on real hardware it would need a flash cart.
+
+## Running
+
+```sh
+# Terminal 1: start BGB in windowed mode, listening for link clients.
+#   -br 8       break when PC hits $0008 (our `ld b,b` halt)
+#   -autoexit   exit when breaking to the debugger
+#   -screenonexit <path>  save a final framebuffer as BMP on exit
+bgb64 -rom ./3forth.gb -listen 127.0.0.1:8765 \
+      -nowarn -nowriteini -br 8 -autoexit \
+      -screenonexit "$(pwd)/hello.bmp"
+
+# Terminal 2: drive the ROM.
+python gbforth.py selftest        # round-trip 512 bytes through WRAM
+python gbforth.py peek 0x0104     # read a ROM byte
+python gbforth.py poke 0xC000 42  # write a RAM byte
+python gbforth.py hello --halt    # draw H in the top-left, then XCALL $0008
+python bmp2png.py hello.bmp hello.png
+```
+
+`--halt` makes `hello` finish by calling into the `ld b,b` trap so that BGB
+autoexits and writes the screenshot. Without `--halt` the ROM keeps waiting
+for more commands.
+
+## The ROM
+
+The Game Boy loops as slave, reading command bytes off SB and dispatching:
+
+```
+loop:            GetByte:                  SendByte:
+  call GetByte     a = $80                   [SB] = a
+  cp 1  -> fetch   [SC] = a  (arm slave)     a = $80
+  cp 2  -> store   wait until SC.bit7==0     [SC] = a
+  cp 3  -> call    return [SB]               wait until SC.bit7==0
+  jr loop                                    return
+
+fetch: GetAddr; a=[hl]; SendByte; jr loop
+store: GetAddr; GetByte; [hl]=a; jr loop
+call:  GetAddr; CallHL; jr loop         (CallHL is just `jp hl`)
+```
+
+Total: 66 bytes. `ld b,b` at $0008 is a BGB source-code breakpoint we use as
+a clean halt target when driving scripted tests.
+
+## The host protocol
+
+BGB's link cable runs over TCP with 8-byte fixed-size packets:
+
+```
+offset size description
+0      1    b1  — command
+1      3    b2/b3/b4 — per-command
+4      4    i1  — little-endian 31-bit timestamp (2 MiHz ticks)
+```
+
+Initial handshake: both sides send cmd `1` (version 1.4.0) and a `108`
+status packet. BGB pauses emulation until the link is synchronized.
+
+To exchange one byte while the GB is armed as slave, the host sends
+cmd `104` (sync1) with `b2=data`, `b3=$81`. BGB replies with either
+`105` (sync2) containing the GB's SB, or `106` (sync3) with `b2=1`
+meaning "GB wasn't waiting on a transfer". The host retries on the
+latter.
+
+### Quirks learned the hard way
+
+- **BGB gates emulation on the remote's timestamp.** If the host sends
+  constant or near-zero timestamps, BGB stalls the GB CPU waiting for
+  the host's clock to "catch up". Sending real wall-clock time expressed
+  in 2 MiHz ticks fixes this.
+- **`sync2.b2` reflects SB with a one-transfer delay.** A `fetch` of
+  `$0104` needs to send five bytes (`01 hi lo 00 00`), not four — the
+  last dummy byte is what actually clocks the real response out.
+- **`-headless` disables LCD emulation** ("run without graphics"), and
+  consequently VRAM reads/writes all become no-ops. Windowed BGB is
+  required even for automated screenshot runs.
+- **BGB boots with `LCDC=$91`** (post-boot-ROM state), so turning off
+  the LCD before touching VRAM is still necessary. Disabling the LCD
+  outside VBlank is undefined on real hardware, and under BGB it leaves
+  VRAM in a state where some subsequent writes leak.
+- **On graceful disconnect, send `109` (wantdisconnect)** after the
+  `108` status announcing `supportreconnect`. Otherwise BGB assumes the
+  drop was unintentional and refuses to re-listen, leaving the port
+  unreachable until BGB is restarted.
+- **Between bytes the GB is briefly not armed.** After `GetByte`
+  returns, there's a small window where the main loop runs `cp` / `jr`
+  before the next `GetByte` re-arms SC. A sync1 that lands in that gap
+  comes back as sync3 b2=1 — `xchg` retries the same byte until the
+  GB catches up.
+
+## The `hello` trick
+
+Driving ~1060 individual `XC!` calls to populate tiles + BG map takes
+~20 s and is also flaky: under BGB some of those VRAM writes don't
+stick (LCD-mode races, disabling-outside-VBlank lingering state, etc).
+
+Instead, `print_h` assembles a ~30-byte subroutine, uploads it into
+WRAM at $C000, puts the 8-byte × 2 'H' glyph at $C100, and issues a
+single `XCALL $C000`. The routine runs at 4.19 MHz inside the emulated
+GB: disables LCD, sets BGP/SCX/SCY, copies the glyph into tile 1 at
+$8010, writes `1` into the top-left BG map cell at $9800, re-enables
+the LCD with `LCDC=$91`, and returns. End-to-end `hello` drops from
+20 s to ~1.2 s and the output is consistent.
+
+This is the shape of the intended workflow with a 3-instruction Forth:
+the target only needs the three primitives; richer words are assembled
+on the host and uploaded-and-run on demand.
+
+## Wire-level tuning knobs
+
+`gbforth.py` sleeps 5 ms after each successful exchange. That's much
+longer than the ~10 µs hardware gap between transfers, but it keeps
+the protocol reliable across Python's GIL, Windows TCP scheduling, and
+BGB's rate-limiting. Dropping it below ~1 ms causes byte misalignment
+under load.
+
+## What's missing / ideas
+
+- The `hello` routine doesn't clear the BG map, so BGB's simulated
+  post-boot logo tiles show next to the `H`. Uploading a second
+  "zero-fill 1024 bytes" routine would fix that.
+- There's no keyboard / REPL — each CLI invocation is a fresh TCP
+  session. A long-lived driver with a prompt would match the original
+  Pygmy-Forth ergonomics better.
+- Real hardware path (flash cart + USB serial adapter wired to the
+  link port) is unexplored; the protocol half is already portable,
+  only the TCP-to-serial shim would change.
