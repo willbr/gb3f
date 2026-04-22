@@ -1,5 +1,54 @@
-1. use the emulator bgb64.exe
-2. use rgbds to make a bootroom for 3 instruction forth
-3. use a python cli script to talk to the rom over the bgb link cable
-4. print a character to the screen
+# gb3f — 3-instruction Forth on the Game Boy
 
+A tiny DMG cartridge ROM that exposes three primitives (`XC@` fetch, `XC!`
+store, `XCALL` subroutine call) to a host PC over the emulated link cable.
+All higher-level behaviour lives on the host, composed out of the three
+primitives — the Game Boy side stays at 66 bytes. Following Frank Sergeant's
+1991 *"A 3-instruction Forth for embedded systems work"* paper
+(`reference/forth.md`), ported to SM83 and BGB's TCP link protocol.
+
+End-to-end demo: a Python script tells the ROM to paint an `H` in the
+top-left of the Game Boy screen.
+
+![hello.png](hello.png)
+
+The large Nintendo® text in the middle is BGB's simulated post-boot VRAM; the
+`H` in the top-left is drawn by our host script via `XC!` + `XCALL`.
+
+## Quick start
+
+```sh
+# Build the ROM.
+rgbasm  -o 3forth.o  3forth.asm
+rgblink -o 3forth.gb -n 3forth.sym 3forth.o
+rgbfix  -p 0 -v 3forth.gb
+
+# Launch BGB (windowed mode — headless disables LCD emulation).
+bgb64 -rom ./3forth.gb -listen 127.0.0.1:8765 \
+      -nowarn -nowriteini -br 8 -autoexit \
+      -screenonexit "$(pwd)/hello.bmp"
+
+# Drive it from the host.
+python gbforth.py selftest       # round-trips 512 bytes to verify the link
+python gbforth.py peek 0x0104    # read one byte (expect CE, Nintendo logo)
+python gbforth.py poke 0xC000 42 # write one byte to WRAM
+python gbforth.py hello --halt   # paint an H, then XCALL $0008 to exit BGB
+python bmp2png.py hello.bmp hello.png
+```
+
+## Layout
+
+| Path | What |
+| --- | --- |
+| `3forth.asm` | SM83 source for the monitor (66 bytes + an `ld b,b` halt at $0008). |
+| `3forth.gb` | Assembled cartridge. |
+| `gbforth.py` | BGB TCP link-cable client and CLI (`peek`, `poke`, `call`, `selftest`, `diag`, `hello`). |
+| `bmp2png.py` | Converts BGB's BMP screenshots to PNG. |
+| `NOTES.md` | Deep dive: protocol details, BGB quirks, the upload-and-XCALL trick. |
+| `reference/` | The source material — Sergeant's paper, Pan Docs, BGB manual, BGB link protocol. |
+
+See `NOTES.md` for how the ROM's dispatch loop works, the host protocol
+framing, the timing/lag gotchas (BGB gates emulation on remote timestamps;
+`sync2.b2` lags one transfer; `-headless` silently kills VRAM writes), and
+why `hello` uploads a routine and `XCALL`s it instead of driving 1000+
+individual stores.
