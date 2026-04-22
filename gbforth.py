@@ -356,6 +356,7 @@ def scroll_demo(link, message, cycles=3, step_delay=0.05, words=None):
 def print_string(link, x, y, message, words=None):
     """Paint an ASCII string onto the BG map at tile coordinates (x, y).
 
+    Multi-line strings (embedded `\\n`) render each line at y, y+1, y+2, ...
     We use tile index = ASCII code, so each character's glyph must be at
     $8000 + ord(c)*16. Only the glyphs for distinct characters in the
     message are uploaded — enough font for the word, no more.
@@ -368,17 +369,23 @@ def print_string(link, x, y, message, words=None):
     words.run("ResetScrollPal")
     words.run("ClearBG")
 
-    # Upload glyphs for each unique character.
-    for ch in set(message.upper()):
+    lines = message.upper().split("\n")
+
+    # Upload glyphs once for every distinct printable character across all lines.
+    for ch in set(ch for line in lines for ch in line):
         tile = ord(ch)
         link.store_many(0x8000 + tile * 16, glyph_2bpp(ch))
 
-    # Stage the null-terminated message in WRAM and point PrintString at it.
-    msg = message.upper().encode("ascii") + b"\0"
-    link.store_many(STAGING, msg)
-    link.store16(ARG0, STAGING)
-    link.store16(ARG1, 0x9800 + y * 32 + x)
-    words.run("PrintString")
+    # Stage each line (NUL-terminated) at its own offset in the staging area,
+    # then fire PrintString per line with the right dest in the BG map.
+    offset = 0
+    for row, line in enumerate(lines):
+        blob = line.encode("ascii") + b"\0"
+        link.store_many(STAGING + offset, blob)
+        link.store16(ARG0, STAGING + offset)
+        link.store16(ARG1, 0x9800 + (y + row) * 32 + x)
+        words.run("PrintString")
+        offset += len(blob)
 
     words.run("LcdBgOn")
 
