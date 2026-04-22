@@ -15,8 +15,12 @@ Game Boy screen.
 | --- | --- |
 | `3forth.asm` | SM83 source for the monitor. Assembles to 66 bytes at $0150 plus an `ld b,b` halt at $0008. |
 | `3forth.gb` | Assembled 32 KiB ROM (rgbasm + rgblink + rgbfix). |
+| `words.asm` | Hot-reloadable library of leaf SM83 words, uploaded into WRAM at runtime. |
 | `gbforth.py` | BGB link-cable client and CLI. |
 | `bmp2png.py` | Pillow one-liner to convert BGB's `.bmp` screenshots to `.png`. |
+| `run_tests.py` | Scenario suite: builds the ROM, drives BGB through each gbforth subcommand, reports pass/fail. |
+| `build/` | rgbasm/rgblink outputs (`.o`, `.sym`, `words.bin`) — gitignored. |
+| `screenshots/` | BGB BMPs (gitignored) and their PNG exports (tracked). |
 | `reference/forth.md` | Sergeant's original 68HC11 paper. |
 | `reference/Specifications.html` | Pan Docs (GB hardware reference). |
 | `reference/bgb readme.html` | BGB 1.6.6 user manual (options, command-line flags). |
@@ -24,9 +28,13 @@ Game Boy screen.
 
 ## Building the ROM
 
+Intermediate outputs (`.o`, `.sym`) land in `build/`; the final
+`3forth.gb` stays at the repo root since it's the tracked distributable.
+
 ```sh
-rgbasm  -o 3forth.o  3forth.asm
-rgblink -o 3forth.gb -n 3forth.sym 3forth.o
+mkdir -p build
+rgbasm  -o build/3forth.o  3forth.asm
+rgblink -o 3forth.gb       -n build/3forth.sym build/3forth.o
 rgbfix  -p 0 -v 3forth.gb
 ```
 
@@ -43,14 +51,19 @@ boots on any DMG emulator; on real hardware it would need a flash cart.
 #   -screenonexit <path>  save a final framebuffer as BMP on exit
 bgb64 -rom ./3forth.gb -listen 127.0.0.1:8765 \
       -nowarn -nowriteini -br 8 -autoexit \
-      -screenonexit "$(pwd)/hello.bmp"
+      -screenonexit "$(pwd)/screenshots/hello.bmp"
 
 # Terminal 2: drive the ROM.
 python gbforth.py selftest        # round-trip 512 bytes through WRAM
 python gbforth.py peek 0x0104     # read a ROM byte
 python gbforth.py poke 0xC000 42  # write a RAM byte
 python gbforth.py hello --halt    # draw H in the top-left, then XCALL $0008
-python bmp2png.py hello.bmp hello.png
+python bmp2png.py screenshots/hello.bmp screenshots/hello.png
+
+# Or run the whole suite non-interactively — `run_tests.py` builds the
+# ROM, spins up a fresh BGB per scenario, and drives each gbforth
+# subcommand in sequence.
+python run_tests.py
 ```
 
 `--halt` makes `hello` finish by calling into the `ld b,b` trap so that BGB

@@ -46,9 +46,11 @@ the host side with multiple XCALLs, not inside the words.
 ```sh
 # Build (requires rgbds on PATH; this repo's toolchain is an OLD rgbasm
 # without `@` as a constant or `ds N, fill` — see `3forth.asm` for the
-# compatible idioms).
-rgbasm  -o 3forth.o  3forth.asm
-rgblink -o 3forth.gb -n 3forth.sym 3forth.o
+# compatible idioms). Intermediate artifacts go to build/; 3forth.gb is
+# the tracked distributable and stays at the repo root.
+mkdir -p build
+rgbasm  -o build/3forth.o  3forth.asm
+rgblink -o 3forth.gb       -n build/3forth.sym build/3forth.o
 rgbfix  -p 0 -v 3forth.gb
 
 # Run BGB listening for the link client. The -br/-autoexit/-screenonexit
@@ -56,7 +58,7 @@ rgbfix  -p 0 -v 3forth.gb
 # XCALL $0008 (our `ld b,b`), BGB breaks, autoexits, saves a BMP.
 bgb64 -rom ./3forth.gb -listen 127.0.0.1:8765 \
       -nowarn -nowriteini -br 8 -autoexit \
-      -screenonexit "$(pwd)/hello.bmp"
+      -screenonexit "$(pwd)/screenshots/hello.bmp"
 
 # Drive the ROM (each call is a fresh TCP session; BGB must still be up).
 python gbforth.py selftest          # 512-byte WRAM round-trip + ROM peeks
@@ -64,13 +66,19 @@ python gbforth.py peek 0x0104       # expect CE (Nintendo logo byte 0)
 python gbforth.py poke 0xC000 42
 python gbforth.py call 0xC000
 python gbforth.py hello --halt      # full end-to-end demo
-python bmp2png.py hello.bmp hello.png
+python bmp2png.py screenshots/hello.bmp screenshots/hello.png
+
+# End-to-end smoke suite (builds, launches a fresh BGB per scenario,
+# drives gbforth, captures screenshots, reports pass/fail).
+python run_tests.py                 # selftest + hello + print + scroll
+python run_tests.py selftest        # single scenario
 ```
 
-There are no tests beyond `gbforth.py selftest`. To sanity-check a change,
-start BGB + run selftest — both the ROM peeks and the WRAM round-trip
-must report 0 failures. `diag` runs `print_h` and peeks back the key
-addresses; useful when a render change doesn't look right on screen.
+Sanity-check any change with `python run_tests.py` — it rebuilds, drives
+every scenario through its own BGB session, and exits non-zero on
+failure. `diag` (not in the suite — no pass/fail signal) runs `print_h`
+and peeks back the key addresses; useful when a render change doesn't
+look right on screen.
 
 ## Protocol invariants the code depends on
 

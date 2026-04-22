@@ -304,9 +304,11 @@ class WordSet:
         self.labels = {}
 
     @staticmethod
-    def compile(asm="words.asm"):
-        """Run rgbasm + rgblink. Returns (bin_path, sym_path)."""
-        stem, _ = os.path.splitext(asm)
+    def compile(asm="words.asm", out_dir="build"):
+        """Run rgbasm + rgblink; emit artifacts into `out_dir`. Returns
+        (bin_path, sym_path)."""
+        os.makedirs(out_dir, exist_ok=True)
+        stem = os.path.join(out_dir, os.path.splitext(os.path.basename(asm))[0])
         o, b, s = stem + ".o", stem + ".bin", stem + ".sym"
         subprocess.check_call(["rgbasm", "-o", o, asm])
         subprocess.check_call(["rgblink", "-o", b, "-n", s, o])
