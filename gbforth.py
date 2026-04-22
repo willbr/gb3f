@@ -332,6 +332,27 @@ def print_h(link, words=None):
     words.run("LcdBgOn")
 
 
+def scroll_demo(link, message, cycles=3, step_delay=0.05, words=None):
+    """Render `message` then animate the BG with SCX so the text appears to
+    scroll horizontally. Each frame is one XC! to $FF43 — the entire
+    animation loop lives on the host; the GB is passive.
+
+    `cycles` = number of full 256-pixel wrap-arounds to walk through.
+    `step_delay` = wall-clock pause between steps (smaller = faster scroll).
+    """
+    if words is None:
+        words = WordSet(link)
+        words.compile_and_upload()
+
+    print_string(link, 0, 8, message, words)
+    total = 256 * cycles
+    t0 = time.time()
+    for i in range(0, total, 2):
+        link.store(0xFF43, i & 0xFF)          # SCX
+    elapsed = time.time() - t0
+    print(f"{total//2} SCX writes in {elapsed:.2f}s ({total/2/elapsed:.0f} Hz)")
+
+
 def print_string(link, x, y, message, words=None):
     """Paint an ASCII string onto the BG map at tile coordinates (x, y).
 
@@ -458,6 +479,7 @@ REPL_HELP = """\
  words                      list loaded words and their runtime addresses
  run <word>                 XCALL a named word
  print <x> <y> <message>    render a string at tile coords (x, y)
+ scroll <message>           render then host-drive SCX to scroll it
  hello                      draw the original "H" demo
  q / quit / Ctrl-D          exit
 """
@@ -522,6 +544,9 @@ def repl(link):
                 print(f"done in {time.time()-t0:.2f}s")
             elif cmd == "hello":
                 print_h(link, ws)
+            elif cmd == "scroll":
+                message = line.split(None, 1)[1] if len(tokens) > 1 else ""
+                scroll_demo(link, message, words=ws)
             else:
                 print(f"unknown: {cmd!r} (type ! for help)")
         except (IndexError, ValueError) as e:
@@ -553,6 +578,12 @@ def main():
                          help="XCALL $0008 after drawing, so a headless BGB can auto-exit")
 
     sub.add_parser("repl", help="interactive prompt that keeps the link open and the word set loaded")
+
+    p_scroll = sub.add_parser("scroll", help="render a message, then host-drive SCX to scroll it")
+    p_scroll.add_argument("message")
+    p_scroll.add_argument("--cycles", type=int, default=2, help="number of 256px wraparounds")
+    p_scroll.add_argument("--halt", action="store_true",
+                          help="XCALL $0008 at the end, so a headless BGB auto-exits")
 
     p_peek = sub.add_parser("peek", help="fetch one byte")
     p_peek.add_argument("addr", type=lambda s: int(s, 0))
@@ -603,6 +634,10 @@ def main():
                 link.call(0x0008)
         elif args.cmd == "repl":
             repl(link)
+        elif args.cmd == "scroll":
+            scroll_demo(link, args.message, cycles=args.cycles)
+            if args.halt:
+                link.call(0x0008)
 
 
 if __name__ == "__main__":

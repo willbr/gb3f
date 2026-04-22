@@ -39,6 +39,7 @@ python gbforth.py run ClearBG      # fire any word from the hot-reloadable libra
 python gbforth.py hello --halt     # paint an H, then XCALL $0008 to exit BGB
 python gbforth.py print "HELLO GAMEBOY!" --halt
 python gbforth.py repl             # interactive prompt; word set stays loaded
+python gbforth.py scroll "HELLO GAMEBOY!"  # host-driven SCX animation
 python bmp2png.py hello.bmp hello.png
 ```
 
@@ -49,7 +50,7 @@ python bmp2png.py hello.bmp hello.png
 | `3forth.asm` | SM83 source for the monitor (66 bytes + an `ld b,b` halt at $0008). |
 | `3forth.gb` | Assembled cartridge. |
 | `words.asm` | Hot-reloadable library of leaf SM83 words, uploaded into WRAM at runtime. |
-| `gbforth.py` | BGB TCP link-cable client and CLI (`peek`, `poke`, `call`, `run`, `reload`, `selftest`, `diag`, `hello`, `print`, `repl`). |
+| `gbforth.py` | BGB TCP link-cable client and CLI (`peek`, `poke`, `call`, `run`, `reload`, `selftest`, `diag`, `hello`, `print`, `repl`, `scroll`). |
 | `bmp2png.py` | Converts BGB's BMP screenshots to PNG. |
 | `NOTES.md` | Deep dive: protocol details, BGB quirks, the hot-reloadable-words workflow. |
 | `reference/` | The source material — Sergeant's paper, Pan Docs, BGB manual, BGB link protocol. |
